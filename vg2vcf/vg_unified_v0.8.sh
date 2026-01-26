@@ -310,21 +310,66 @@ done
 ############################
 # STEP 90: MultiQC
 ############################
+
 STEP="90_MultiQC"
+
 if step_done "${STEP}"; then
-    log "Step 90: MultiQC done."
+    log "Step 90: MultiQC already done."
 else
     log "Generating MultiQC..."
-    mkdir -p "${QC_DIR}/current_run"
-    cp "${QC_DIR}"/"${SAMPLE}"* "${QC_DIR}/current_run/"
-    cp "${QC_DIR}/fastqc/"* "${QC_DIR}/current_run/" 2>/dev/null || true
-    
-    docker run --rm --user $(id -u):$(id -g) -v "${QC_DIR}/current_run":/qc "${MULTIQC_IMAGE}" \
-        multiqc /qc -o /qc/multiqc_report --title "${SAMPLE} Pangenome QC" --force
 
-    mv "${QC_DIR}/current_run/multiqc_report" "${QC_DIR}/${SAMPLE}_multiqc_report"
-    rm -rf "${QC_DIR}/current_run"
+    # Fresh workspace
+    mkdir -p "${QC_DIR}/current_run"
+    rm -f "${QC_DIR}/current_run/"*
+
+    ###############################################
+    # Copy QC artifacts explicitly (no directories)
+    ###############################################
+
+    # 1. Stats files (BAM, VCF, GAM)
+    find "${QC_DIR}" -maxdepth 1 -type f \
+        \( -name "${SAMPLE}*.stats" -o -name "${SAMPLE}*.txt" \) \
+        -exec cp {} "${QC_DIR}/current_run/" \;
+
+    # 2. FastQC HTML + ZIP files
+    if [ -d "${QC_DIR}/fastqc" ]; then
+        find "${QC_DIR}/fastqc" -maxdepth 1 -type f \
+            \( -name "*.html" -o -name "*.zip" \) \
+            -exec cp {} "${QC_DIR}/current_run/" \;
+    fi
+
+    ###############################################
+    # Run MultiQC
+    ###############################################
+
+    docker run --rm \
+        --user $(id -u):$(id -g) \
+        -v "${QC_DIR}/current_run":/qc \
+        "${MULTIQC_IMAGE}" \
+        multiqc /qc \
+            -o /qc/multiqc_report \
+            --title "${SAMPLE} Pangenome QC" \
+            --force
+
+    ###############################################
+    # Move final report into stable location
+    ###############################################
+
+    mv "${QC_DIR}/current_run/multiqc_report" \
+       "${QC_DIR}/${SAMPLE}_multiqc_report"
+
+    ###############################################
+    # Cleanup unless debugging
+    ###############################################
+
+    if [[ -z "${DEBUG_QC}" ]]; then
+        rm -rf "${QC_DIR}/current_run"
+    else
+        log "DEBUG_QC enabled — preserving current_run/"
+    fi
+
     mark_done "${STEP}"
 fi
+
 
 log "Pipeline Complete."
