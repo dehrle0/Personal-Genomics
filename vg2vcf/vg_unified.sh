@@ -408,6 +408,7 @@ else
     # Move final report into stable location
     ###############################################
 
+    rm -rf "${QC_DIR}/current_run/multiqc_report" 
     mv "${QC_DIR}/current_run/multiqc_report" \
        "${QC_DIR}/${SAMPLE}_multiqc_report"
 
@@ -415,7 +416,7 @@ else
     # Cleanup current_run
     ###############################################
 
-    rm -rf "${QC_DIR}/current_run"
+    rm -rf "${QC_DIR}/current_run/multiqc_report"
 
     mark_done "${STEP}"
 fi
