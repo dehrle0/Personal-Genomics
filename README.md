@@ -1,4 +1,4 @@
-# Pangenome WGS Unified Pipeline (v0.8) - ** results need verification **
+# Pangenome WGS Unified Pipeline (v0.8) - **Results only spot checked - validation needed**
 
 A robust, "batteries-included" Bash pipeline for Whole Genome Sequencing (WGS) analysis using the **HPRC Pangenome Graph** (v1.1).
 
