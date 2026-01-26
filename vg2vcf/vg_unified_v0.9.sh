@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# vg_unified_v0.8.sh
+# vg_unified_v0.9.sh
 #
-# Unified Pangenome Pipeline v2.1
+# Unified Pangenome Pipeline v2.2
 # Updates:
-# - Step 50 now loops to call SVs for BOTH GRCh38 and CHM13.
-# - Tracks progress in 'completed_steps_${SAMPLE}.txt'.
-# - Fixes MultiQC to isolate current sample stats.
+# - Step 50: Added BCFTools stats generation for SV VCFs.
+# - Step 60: Added VCF export and stats generation for CNVkit results.
+# - Step 90: Updated MultiQC file gathering to include CNV stats.
 
 set -euo pipefail
 
 # --- CONFIGURATION ---
 SAMPLE="ME"              # Change to "ME" for next sample
-SAMPLE_SEX="female"        # "male" or "female" (Critical for CNVkit)
+SAMPLE_SEX="female"      # "male" or "female" (Critical for CNVkit)
 THREADS="12"
-REF_MODE="GRCh38"          # "GRCh38", "CHM13", or "BOTH"
+REF_MODE="GRCh38"        # "GRCh38", "CHM13", or "BOTH"
 
 # --- HOST PATHS ---
 REF_DIR_HOST="/mnt/data/work/references"
@@ -34,7 +34,6 @@ LOG_DIR="${WORK_DIR}/logs"
 QC_DIR="${WORK_DIR}/qc"
 CNV_DIR="${WORK_DIR}/cnv"
 COMPLETION_FILE="${WORK_DIR}/completed_steps_${SAMPLE}.txt"
-README_FILE="${WORK_DIR}/README_${SAMPLE}_v2.1.md"
 
 # --- IMAGES ---
 VG_IMAGE="quay.io/vgteam/vg:v1.70.0"
@@ -56,7 +55,7 @@ log() { printf '[%s] %s\n' "$(date --iso-8601=seconds)" "$1" | tee -a "${LOG_DIR
 step_done() { grep -qx "$1" "${COMPLETION_FILE}" 2>/dev/null || return 1; }
 mark_done() { echo "$1" >> "${COMPLETION_FILE}"; }
 
-log "Starting v2.1 for Sample: ${SAMPLE} (${SAMPLE_SEX})"
+log "Starting v2.2 for Sample: ${SAMPLE} (${SAMPLE_SEX})"
 
 ############################
 # STEP 05: Reads QC
@@ -142,17 +141,12 @@ for REF_TYPE in "${REFS[@]}"; do
         docker run --rm --user $(id -u):$(id -g) -v "${WORK_DIR}":/work "${SAMTOOLS_IMAGE}" \
             samtools sort -@ "${THREADS}" -o "/work/$(basename "${TEMP_SORTED}")" "/work/$(basename "${RAW_BAM}")"
 
-        # AWK-based Header Manipulation (No Python required)
-        # We mount the FAI file to read lengths
+        # AWK-based Header Manipulation
         docker run --rm --user $(id -u):$(id -g) -v "${WORK_DIR}":/work -v "${REF_DIR_HOST}":/references:ro "${SAMTOOLS_IMAGE}" /bin/bash -c "
-            # 1. Dump header
             samtools view -H /work/$(basename "${TEMP_SORTED}") > /work/old_header.sam
             
-            # 2. Process with AWK
-            # We pass the reference type (GRCh38 or CHM13) and the FAI file path
             awk -v ref=\"${REF_TYPE}\" '
                 BEGIN {
-                    # Load FAI file into associative array: length[name] = len
                     while ((getline < \"/references/$(basename "${LOCAL_FAI}")\") > 0) {
                         split(\$0, a, \"\t\");
                         len[a[1]] = a[2];
@@ -160,20 +154,16 @@ for REF_TYPE in "${REFS[@]}"; do
                 }
                 {
                     if (\$1 == \"@SQ\") {
-                        # Extract SN:name
                         for (i=2; i<=NF; i++) {
                             if (\$i ~ /^SN:/) {
                                 orig_name = substr(\$i, 4);
-                                # Clean the name
                                 clean_name = orig_name;
                                 gsub(ref \"#0#\", \"\", clean_name);
                                 gsub(ref \"#\", \"\", clean_name);
                                 
-                                # Check if we have a length for this clean name
                                 if (clean_name in len) {
                                     printf \"@SQ\tSN:%s\tLN:%s\n\", clean_name, len[clean_name];
                                 } else {
-                                    # Fallback: just print the line with the name cleaned but old length (rare)
                                     gsub(orig_name, clean_name);
                                     print \$0;
                                 }
@@ -181,7 +171,6 @@ for REF_TYPE in "${REFS[@]}"; do
                             }
                         }
                     }
-                    # Print all other lines (HD, PG, CO) as is
                     print \$0;
                 }
             ' /work/old_header.sam > /work/new_header.sam
@@ -227,52 +216,50 @@ for REF_TYPE in "${REFS[@]}"; do
     else
         log "Splitting VCFs for ${REF_TYPE}..."
         docker run --rm --user $(id -u):$(id -g) \
-            -v "${WORK_DIR}":/work -v "${REF_DIR_HOST}":/references:ro "${BCFTOOLS_IMAGE}" \
+            -v "${WORK_DIR}":/work -v "${REF_DIR_HOST}":/references:ro -v "${QC_DIR}":/qc "${BCFTOOLS_IMAGE}" \
             /bin/sh -c "
                 bcftools view -v snps -f PASS -i 'QUAL>=30 && DP>=10' /work/$(basename "${FINAL_VCF}") -Oz -o /work/$(basename "${SNP_VCF}") && \
                 bcftools index -t /work/$(basename "${SNP_VCF}") && \
                 bcftools norm -f ${DOCKER_REF_PATH} -m -any /work/$(basename "${FINAL_VCF}") -Ou | \
                 bcftools view -V snps -i 'QUAL>=15 && DP>=10 && FILTER!=\"RefCall\"' -Oz -o /work/$(basename "${INDEL_VCF}") && \
                 bcftools index -t /work/$(basename "${INDEL_VCF}") && \
-                bcftools stats /work/$(basename "${SNP_VCF}") > /work/$(basename "${SNP_VCF}").stats && \
-                bcftools stats /work/$(basename "${INDEL_VCF}") > /work/$(basename "${INDEL_VCF}").stats
+                bcftools stats /work/$(basename "${SNP_VCF}") > /qc/$(basename "${SNP_VCF}").stats && \
+                bcftools stats /work/$(basename "${INDEL_VCF}") > /qc/$(basename "${INDEL_VCF}").stats
             "
-        mv "${WORK_DIR}"/*.stats "${QC_DIR}/"
         mark_done "${STEP_ID}"
     fi
 
     ############################
-    # STEP 60: CNV Calling
+    # STEP 60: CNV Calling (UPDATED)
     ############################
     STEP_ID="60_${REF_TYPE}"
     if step_done "${STEP_ID}"; then
-        log "Step 60 (${REF_TYPE}): CNV already completed."
+        log "Step 60 (${REF_TYPE}): CNV done."
     else
         log "Running CNVkit for ${REF_TYPE}..."
         
-        # Sex Logic
         SEX_FLAG=""
         if [[ "${SAMPLE_SEX}" == "male" ]]; then SEX_FLAG="--male"; fi
         
-        # 1. Run the main batch pipeline
+        # 1. CNVkit Batch
         docker run --rm --user $(id -u):$(id -g) \
             -v "${WORK_DIR}":/work -v "${REF_DIR_HOST}":/references:ro -v "${CNV_DIR}":/output "${CNVKIT_IMAGE}" \
             cnvkit.py batch "/work/$(basename "${FINAL_BAM}")" \
             --normal --fasta "${DOCKER_REF_PATH}" --method wgs \
             --output-dir /output/ ${SEX_FLAG} --drop-low-coverage --scatter --diagram
 
-        # 2. Export to VCF (This creates the file bcftools can read)
-        log "Exporting ${REF_TYPE} CNVs to VCF..."
+        # 2. Export to VCF for Stats
+        log "Exporting CNV calls to VCF..."
         docker run --rm --user $(id -u):$(id -g) \
             -v "${CNV_DIR}":/output "${CNVKIT_IMAGE}" \
             cnvkit.py export vcf "/output/${SAMPLE}.${REF_TYPE}.cns" \
             -i "${SAMPLE}" -o "/output/${SAMPLE}.${REF_TYPE}.cnv.vcf"
 
-        # 3. Generate Stats for MultiQC
+        # 3. Generate Stats
         log "Generating CNV stats..."
         docker run --rm --user $(id -u):$(id -g) \
             -v "${CNV_DIR}":/cnv -v "${QC_DIR}":/qc "${BCFTOOLS_IMAGE}" \
-            /bin/sh -c "bcftools stats /cnv/${SAMPLE}.${REF_TYPE}.cnv.vcf > /qc/${SAMPLE}.${REF_TYPE}.cnv.vcf.stats"
+            /bin/sh -c "bcftools stats /cnv/${SAMPLE}.${REF_TYPE}.cnv.vcf > /cnv/${SAMPLE}.${REF_TYPE}.cnv.stats"
         
         mark_done "${STEP_ID}"
     fi
@@ -305,14 +292,13 @@ for REF_TYPE in "${REFS[@]}"; do
         log "Step 50 (Call): SVs for ${REF_TYPE} already done."
     else
         log "Graph SV: Calling variants for ${REF_TYPE}..."
-        # We use -S ${REF_TYPE} because HPRC graphs contain paths like GRCh38#... and CHM13#...
         docker run --rm --user root -v "${WORK_DIR}":/work -v "${GRAPH_DIR_HOST}":/graph "${VG_IMAGE}" \
             /bin/sh -c "vg call /graph/$(basename "${GBZ_HOST}") \
                 -k /work/$(basename "${PACK_FILE}") \
                 -S ${REF_TYPE} \
                 -a -z -t ${THREADS} > /work/$(basename "${SV_VCF%.gz}")"
 
-        # Compress/Index AND Generate Stats
+        # Compress/Index AND Generate Stats (UPDATED)
         log "Graph SV: Compressing and generating stats for ${REF_TYPE}..."
         docker run --rm --user $(id -u):$(id -g) \
             -v "${WORK_DIR}":/work -v "${QC_DIR}":/qc "${BCFTOOLS_IMAGE}" \
@@ -320,11 +306,11 @@ for REF_TYPE in "${REFS[@]}"; do
                 bgzip -f /work/$(basename "${SV_VCF%.gz}") && \
                 tabix -p vcf /work/$(basename "${SV_VCF}") && \
                 bcftools stats /work/$(basename "${SV_VCF}") > /qc/${SAMPLE}.${REF_TYPE}.sv.vcf.stats
-            "   
+            "
+            
         mark_done "${STEP_ID}"
     fi
 done
-# rm -f "${PACK_FILE}" # Optional cleanup
 
 ############################
 # STEP 90: MultiQC
@@ -345,12 +331,21 @@ else
     # Copy QC artifacts explicitly (no directories)
     ###############################################
 
-    # 1. Stats files (BAM, VCF, GAM)
+    # 1. Main QC Stats (BAM, VCF, GAM, SV)
+    # Catches .stats, .txt, and .vchk files in the QC directory
     find "${QC_DIR}" -maxdepth 1 -type f \
-        \( -name "${SAMPLE}*.stats" -o -name "${SAMPLE}*.txt" \) \
+        \( -name "${SAMPLE}*.stats" -o -name "${SAMPLE}*.txt" -o -name "${SAMPLE}*.vchk" \) \
         -exec cp {} "${QC_DIR}/current_run/" \;
 
-    # 2. FastQC HTML + ZIP files
+    # 2. CNV Stats (located in CNV_DIR)
+    # Catches the specific CNV VCF stats we generated in Step 60
+    if [ -d "${CNV_DIR}" ]; then
+        find "${CNV_DIR}" -maxdepth 1 -type f \
+            -name "${SAMPLE}*.stats" \
+            -exec cp {} "${QC_DIR}/current_run/" \;
+    fi
+
+    # 3. FastQC HTML + ZIP files
     if [ -d "${QC_DIR}/fastqc" ]; then
         find "${QC_DIR}/fastqc" -maxdepth 1 -type f \
             \( -name "*.html" -o -name "*.zip" \) \
@@ -385,6 +380,5 @@ else
 
     mark_done "${STEP}"
 fi
-
 
 log "Pipeline Complete."
