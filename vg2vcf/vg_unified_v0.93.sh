@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# vg_unified_v0.92.sh
+# vg_unified_v0.93.sh
 # Status: TESTING / MEMORY-OPTIMIZED
 #
 # Logic: Bypasses HashGraph (.hg) and Augmentation to stay under 40GB RAM.
@@ -15,11 +15,11 @@ set -euo pipefail
 
 # --- 1. GRANULAR TOGGLES ---
 DO_DOWNLOAD=false
-DO_INDEX=false       # Rebuilds .dist, .min, and .snarls
-DO_QC=false
-DO_ALIGN=false      # vg giraffe
-DO_SURJECT=false     # vg surject + Header/LN Fix
-DO_VCF_DV=false     # DeepVariant
+DO_INDEX=true       # Rebuilds .dist, .min, and .snarls
+DO_QC=true
+DO_ALIGN=true      # vg giraffe
+DO_SURJECT=true     # vg surject + Header/LN Fix
+DO_VCF_DV=true     # DeepVariant
 DO_VCF_CNV=true     # CNVkit
 DO_VCF_SV=true      # vg call (Direct from GBZ)
 DO_MULTIQC=true
@@ -38,6 +38,8 @@ HS1_LOCAL="${REF_DIR_HOST}/chm13v2.0_maskedY_rCRS.fa"
 
 GRAPH_DIR_HOST="${REF_DIR_HOST}/hrpc"
 # Reverted to .d9.gbz (Downsampled graph, lower memory)
+# GBZ_HOST="${GRAPH_DIR_HOST}/hprc-v1.1-mc-chm13.gbz"
+# HAPL_HOST="${GRAPH_DIR_HOST}/hprc-v1.1-mc-chm13.hapl"
 GBZ_HOST="${GRAPH_DIR_HOST}/hprc-v1.1-mc-chm13.d9.gbz"
 
 READS_DIR_HOST="/mnt/c/Genomes/${SAMPLE}/Data/Source"
@@ -211,7 +213,6 @@ run_sv_calling() {
 
     if ! step_done "55_SV_${ref}"; then
         log "Step 55: vg call (Ref: ${ref})..."
-        # Added -S to specify the reference sample and -z to use GBZ haplotypes
         docker run --rm -v "${WORK_DIR}":/work -v "${GRAPH_DIR_HOST}":/graph -v "${VAR_DIR}":/variants "${VG_IMAGE}" \
             /bin/sh -c "vg call /graph/$(basename "${GBZ_HOST}") \
             -k /work/${SAMPLE}.pack \
@@ -219,6 +220,10 @@ run_sv_calling() {
             -S ${ref} \
             -z \
             -t ${MEM_THREADS} | bgzip -c > /variants/${SAMPLE}.${ref}.sv.vcf.gz"
+        
+        # Cleanup: Remove .pack file to save several GBs
+        log "Cleaning up .pack file..."
+        rm -f "${WORK_DIR}/${SAMPLE}.pack"
         mark_done "55_SV_${ref}"
     fi
 }
@@ -230,14 +235,20 @@ run_cnvkit() {
     
     local D_REF="/refs/hg38.fa"; [[ "$ref" == "CHM13" ]] && D_REF="/refs/hs1.fa"
     local SEX_FLAG=""; [[ "${SAMPLE_SEX}" == "male" ]] && SEX_FLAG="--male-reference"
+    local REF_CNN="${CNV_DIR}/${SAMPLE}.${ref}.reference.cnn"
 
     docker run --rm -v "${WORK_DIR}":/work -v "${REF_DIR_HOST}":/refs:ro -v "${CNV_DIR}":/output "${CNVKIT_IMAGE}" \
         cnvkit.py batch "/work/${SAMPLE}.${ref}.bam" \
         --fasta "${D_REF}" \
         --method wgs \
-        --output-reference /output/flat_reference.cnn \
+        --output-reference "/output/$(basename "${REF_CNN}")" \
         -d /output/ \
+        -n \
         ${SEX_FLAG}
+    
+    # Cleanup: Remove the flat reference CNN as it is specific to this BAM/Ref combo
+    log "Cleaning up temporary CNVkit reference..."
+    rm -f "${REF_CNN}"
     
     mark_done "60_CNVkit_${ref}"
 }
