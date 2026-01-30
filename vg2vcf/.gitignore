@@ -1,0 +1,33 @@
+# --- Pipeline Configuration ---
+# Never commit local paths or hardware-specific thread counts
+pipeline.env
+
+# --- Tracking & Logs ---
+# Keep progress trackers out of the repo so different samples don't conflict
+completed_steps_*.txt
+*.log
+
+# --- Data & Results ---
+# Ignore all large genomic data files
+*.bam
+*.bai
+*.gam
+*.pack
+*.vcf.gz
+*.vcf.gz.tbi
+*.cns
+*.cnr
+
+# --- Directories ---
+# Ignore the actual working data folders
+/mnt/data/work/
+/qc/
+/cnv/
+/variants/
+/logs/
+
+# --- System & IDE ---
+.DS_Store
+.vscode/
+.idea/
+__pycache__/
