@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 #
-# vg_unified_v0.91.sh
+# vg_unified_v0.92.sh
 # Status: TESTING / MEMORY-OPTIMIZED
 #
 # Logic: Bypasses HashGraph (.hg) and Augmentation to stay under 40GB RAM.
-# Uses .gbz + .snarls for variant calling.
+# Uses .d9.gbz (Downsampled) + .snarls for variant calling.
 # Includes full BAM header repair (Stripping prefixes + matching LN to .fai).
+#
+# v0.92 Fixes:
+# - Changed 'vg index -m' to 'vg minimizer' for .min generation.
+# - Changed 'vg index -d' to 'vg index -j' for .dist generation.
 
 set -euo pipefail
 
@@ -33,11 +37,8 @@ HG38_LOCAL="${REF_DIR_HOST}/hg38.fa"
 HS1_LOCAL="${REF_DIR_HOST}/chm13v2.0_maskedY_rCRS.fa"
 
 GRAPH_DIR_HOST="${REF_DIR_HOST}/hrpc"
-# Use the non-d9 GBZ (has GBWT / .hapl for haplotype-aware giraffe)
-GBZ_HOST="${GRAPH_DIR_HOST}/hprc-v1.1-mc-chm13.gbz"
-# Optional explicit haplotype index path (if present next to the GBZ)
-HAPL_HOST="${GRAPH_DIR_HOST}/hprc-v1.1-mc-chm13.gbz.hapl"
-
+# Reverted to .d9.gbz (Downsampled graph, lower memory)
+GBZ_HOST="${GRAPH_DIR_HOST}/hprc-v1.1-mc-chm13.d9.gbz"
 
 READS_DIR_HOST="/mnt/c/Genomes/${SAMPLE}/Data/Source"
 FQ1_HOST="${READS_DIR_HOST}/ME_chr20_R1.fastq.gz"
@@ -77,7 +78,7 @@ download_refs() {
     log "Step 00: Checking references..."
     mkdir -p "${GRAPH_DIR_HOST}" "${REF_DIR_HOST}"
 
-    [[ ! -f "${GBZ_HOST}" ]] && log "Downloading GBZ..." && wget -c -P "${GRAPH_DIR_HOST}" https://s3-us-west-2.amazonaws.com/human-pangenomics/pangenomes/freeze/freeze1/release/v1.1/mc_chm13/hprc-v1.1-mc-chm13.gbz
+    [[ ! -f "${GBZ_HOST}" ]] && log "Downloading GBZ..." && wget -c -P "${GRAPH_DIR_HOST}" https://s3-us-west-2.amazonaws.com/human-pangenomics/pangenomes/freeze/freeze1/release/v1.1/mc_chm13/hprc-v1.1-mc-chm13.d9.gbz
     
     if [[ ! -f "${HG38_LOCAL}" ]]; then
         log "Downloading hg38..."
@@ -93,20 +94,23 @@ rebuild_indexes() {
     local BASE_NAME=$(basename "${GBZ_HOST}")
     local SNARLS_HOST="${GBZ_HOST%.gbz}.snarls"
 
-    # 1. Dist/Min Indexes
+    # 1. Dist Index (Using -j for Snarl Distance Index)
     if [[ ! -f "${GBZ_HOST%.gbz}.dist" ]]; then
         log "Step 01a: Rebuilding .dist index..."
         docker run --rm -v "${GRAPH_DIR_HOST}":/graph "${VG_IMAGE}" \
-            vg index -t "${THREADS}" -d "/graph/${BASE_NAME%.gbz}.dist" "/graph/${BASE_NAME}"
+            vg index -t "${THREADS}" -j "/graph/${BASE_NAME%.gbz}.dist" "/graph/${BASE_NAME}"
     fi
 
+    # 2. Minimizer Index (Using vg minimizer, not vg index)
     if [[ ! -f "${GBZ_HOST%.gbz}.min" ]]; then
         log "Step 01b: Rebuilding .min index..."
         docker run --rm -v "${GRAPH_DIR_HOST}":/graph "${VG_IMAGE}" \
-            vg index -t "${THREADS}" -m "/graph/${BASE_NAME%.gbz}.min" "/graph/${BASE_NAME}"
+            vg minimizer -t "${THREADS}" \
+            -d "/graph/${BASE_NAME%.gbz}.dist" \
+            -o "/graph/${BASE_NAME%.gbz}.min" "/graph/${BASE_NAME}"
     fi
 
-    # 2. Snarls (Critical for calling)
+    # 3. Snarls (Critical for calling)
     if [[ ! -f "${SNARLS_HOST}" ]]; then
         log "Step 01c: Generating Snarls (Using throttled threads for RAM safety)..."
         docker run --rm -v "${GRAPH_DIR_HOST}":/graph "${VG_IMAGE}" \
@@ -117,7 +121,7 @@ rebuild_indexes() {
 # --- 5. CORE PIPELINE ---
 
 run_fastqc() {
-    if [[ "$DO_QC" == "false" || step_done "05_FastQC" ]]; then return; fi
+    if [[ "$DO_QC" == "false" ]] || step_done "05_FastQC"; then return; fi
     log "Step 05: FastQC..."
     docker run --rm -v "${READS_DIR_HOST}":/reads:ro -v "${QC_DIR}/fastqc":/output "${FASTQC_IMAGE}" \
         fastqc -t "${THREADS}" -o /output "/reads/$(basename "${FQ1_HOST}")" "/reads/$(basename "${FQ2_HOST}")"
@@ -125,12 +129,13 @@ run_fastqc() {
 }
 
 run_alignment() {
-    if [[ "$DO_ALIGN" == "false" || step_done "10_Align" ]]; then return; fi
+    if [[ "$DO_ALIGN" == "false" ]] || step_done "10_Align"; then return; fi
     log "Step 10: vg giraffe alignment (GAM output)..."
+    
+    # Removed -H (haplotype) flag as requested for d9 usage
     docker run --rm -v "${GRAPH_DIR_HOST}":/graph -v "${READS_DIR_HOST}":/reads:ro -v "${WORK_DIR}":/work "${VG_IMAGE}" \
         vg giraffe \
         -Z "/graph/$(basename "${GBZ_HOST}")" \
-        -H "/graph/$(basename "${HAPL_HOST}")" \
         -m "/graph/$(basename "${GBZ_HOST%.gbz}.min")" \
         -d "/graph/$(basename "${GBZ_HOST%.gbz}.dist")" \
         -f "/reads/$(basename "${FQ1_HOST}")" -f "/reads/$(basename "${FQ2_HOST}")" \
@@ -214,7 +219,7 @@ run_sv_calling() {
 
 run_cnvkit() {
     local ref=$1
-    if [[ "$DO_VCF_CNV" == "false" || step_done "60_CNVkit_${ref}" ]]; then return; fi
+    if [[ "$DO_VCF_CNV" == "false" ]] || step_done "60_CNVkit_${ref}"; then return; fi
     log "Step 60: CNVkit..."
     local D_REF="/refs/hg38.fa"; [[ "$ref" == "CHM13" ]] && D_REF="/refs/hs1.fa"
     local SEX_FLAG=""; [[ "${SAMPLE_SEX}" == "male" ]] && SEX_FLAG="--male-reference"
@@ -232,7 +237,7 @@ run_multiqc() {
 
 # --- 6. MAIN ---
 main() {
-    log "Starting vg_unified v0.91..."
+    log "Starting vg_unified v0.92..."
     download_refs
     rebuild_indexes
     run_fastqc
