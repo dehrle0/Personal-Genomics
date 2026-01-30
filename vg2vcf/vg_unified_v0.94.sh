@@ -21,8 +21,8 @@ HG38_LOCAL="${REF_DIR_HOST}/hg38.fa"
 HS1_LOCAL="${REF_DIR_HOST}/chm13v2.0_maskedY_rCRS.fa"
 
 # Detect FastQs - Assuming standard naming if not explicitly set in env
-FQ1_HOST="${READS_DIR_HOST}/${FQ1_NAME:-ME_chr20_R1.fastq.gz}"
-FQ2_HOST="${READS_DIR_HOST}/${FQ2_NAME:-ME_chr20_R2.fastq.gz}"
+FQ1_HOST="${READS_DIR_HOST}/${FQ1_NAME:-MelindaEhrle-SQXB2888-30x-WGS-Sequencing_com-2024-08-18.1.fq.gz}"
+FQ2_HOST="${READS_DIR_HOST}/${FQ2_NAME:-MelindaEhrle-SQXB2888-30x-WGS-Sequencing_com-2024-08-18.2.fq.gz}"
 
 WORK_DIR="/mnt/data/work/vg_pangenome"
 LOG_DIR="${WORK_DIR}/logs"
