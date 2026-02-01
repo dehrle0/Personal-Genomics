@@ -2,7 +2,7 @@
 
 ## vg2vcf
 
-A robust, Bash pipeline for Whole Genome Sequencing (WGS) analysis using the **HPRC Pangenome Graph** (v1.1).
+A robust, Unvalidated, Bash pipeline for Whole Genome Sequencing (WGS) analysis using the **HPRC Pangenome Graph** (v1.1).
 
 This pipeline performs read mapping against a pangenome graph (VG Giraffe) and projects the data onto **two linear references simultaneously** (GRCh38 and CHM13). It outputs fully compliant BAMs, VCFs (SNPs/Indels), Structural Variants (SVs), and Copy Number Variants (CNVs).
 
