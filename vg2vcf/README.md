@@ -1,5 +1,5 @@
 This updated README reflects the **v0.94** architecture, highlighting the transition to a separate configuration file (`pipeline.env`), the dynamic haplotype support for full pangenome graphs, and the memory-optimized throttling logic.
-
+v0.93 has been tested, with results only spot checked.  v0.94 is untested.
 ---
 
 # Pangenome WGS Unified Pipeline (v0.94)
